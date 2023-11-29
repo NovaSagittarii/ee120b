@@ -32,6 +32,14 @@ void Set(int x, int y) {
   // set a bit
   canvas[cy + cx*2][y - cy*8] |= 1 << (4 - (x - cx*5));
 }
+void XorSet(int x, int y) {
+  if (!OnScreen(x, y)) {
+    return;
+  }
+  const int cx = x / 5;
+  const int cy = y / 8;
+  canvas[cy + cx*2][y - cy*8] ^= 1 << (4 - (x - cx*5));
+}
 
 class Projectile {
  private: // 5 bytes
@@ -49,6 +57,12 @@ class Projectile {
       _state &= 0xFE; // unset valid bit
     }
   }
+  char GetX() const {
+    return _x;
+  }
+  char GetY() const {
+    return _y;
+  }
   void Draw() {
     Set(_x, _y);
   }
@@ -57,6 +71,15 @@ class Projectile {
   }
   bool IsFriendly() const {
     return (_state & 2) == 2;
+  }
+  void Destroy() {
+    _state &= 0xFE; // invalidate
+    // 1 frame animation
+    XorSet(_x, _y);
+    XorSet(_x-1, _y-1);
+    XorSet(_x+1, _y-1);
+    XorSet(_x-1, _y+1);
+    XorSet(_x+1, _y+1);
   }
 };
 
@@ -79,6 +102,53 @@ inline void ProcessProjectiles() {
 }
 #define AddProjectile(p) projectiles[projectile_n++] = p;
 
+class Player {
+ private:
+  byte _state;
+ public:
+  byte life;
+  int score;
+  char x, y, dx;
+  Player(char nx, char ny): x(nx), y(ny) {
+    dx = 0;
+    _state = 1;
+    life = 5;
+    score = 0;
+  }
+  void Tick() {
+    _state += 2;
+    if ((_state & 0x03) == 0x03) { // move faster
+      if (OnScreen(x+dx, 1)) { // make sure movement is valid
+        x += dx;
+      }
+    }
+    if ((_state & 0x0E) == 0x0E) { // periodic 
+      AddProjectile(Projectile(x, y-1, 0, -1, true));
+    }
+    // loop through projectiles to see if you got hit
+    for (int i = 0; i < projectile_n; ++i) {
+      Projectile &projectile = projectiles[i];
+      if (!projectile.IsFriendly() && abs(projectile.GetX() - x) + abs(projectile.GetY() - y) <= 1) { // within 1 manhattan dist
+        --life;
+        projectile.Destroy();
+      }
+    }
+    if (life <= 0) {
+      _state &= 0xFE; // die
+    }
+  }
+  void Draw() {
+    Set(x, y);
+    Set(x, y+1);
+    Set(x-1, y+1);
+    Set(x+1, y+1);
+  }
+  bool IsValid() const {
+    return (_state & 1) == 1;
+  }
+};
+Player player(10, 14);
+
 class Ship {
  private:
   char _x, _y, _dx, _dy;
@@ -97,7 +167,8 @@ class Ship {
   void Tick() {
     _state += 2;
     if ((_state & 0x0E) == 0x0E) { // periodic 
-      AddProjectile(Projectile(_x, _y+1, 0, 1, false));
+      AddProjectile(Projectile(_x-1, _y+1, 0, 1, false));
+      AddProjectile(Projectile(_x+1, _y+1, 0, 1, false));
       if (!OnScreen(_x+_dx, 1)) {
         _dx *= -1; // change direction!
       }
@@ -106,6 +177,16 @@ class Ship {
         _y += _dy;
       }
       if (!OnScreen(_x, _y)) _state &= 0xFE; // unset valid bit
+    }
+    // loop through projectiles to see if you got hit
+    for (int i = 0; i < projectile_n; ++i) {
+      Projectile &projectile = projectiles[i];
+      if (projectile.IsFriendly() && abs(projectile.GetX() - _x) + abs(projectile.GetY() - _y) <= 1) { // within 1 manhattan dist
+        _state &= 0xFE; // unset valid bit
+        projectile.Destroy();
+        player.score += 10;
+        break;
+      }
     }
   }
   void Draw() {
@@ -152,13 +233,27 @@ void setup() {
 //  for (int i = 0; i < 10; ++i) {
 //    AddProjectile(Projectile(i, i, 0, 1, false));
 //  }
-//  Serial.begin(9600);
+  Serial.begin(9600);
+  pinMode(A0, INPUT);
 }
 
 void loop() {
   Clear();
   ProcessShips();
   ProcessProjectiles();
+
+  int a0 = analogRead(A0);
+  if (a0 < 200) {
+    player.dx = -1;
+  } else if(a0 > 800) {
+    player.dx = 1;
+  } else {
+    player.dx = 0;
+  }
+  if (player.IsValid()) {
+    player.Draw();
+    player.Tick();
+  }
   
   // push canvas to lcd
   for (int g = 0; g < 8; ++g) {
@@ -170,7 +265,13 @@ void loop() {
       lcd.write(byte(i*2 + j));
     }
   }
-  lcd.setCursor(15, 0);
-  lcd.write("A");
+  lcd.setCursor(6, 0);
+  lcd.print("hp  ");
+  lcd.print((int)player.life);
+  lcd.print("  ");
+  lcd.setCursor(6, 1);
+  lcd.print("pts ");
+  lcd.print(player.score);
+  lcd.print("  ");
   delay(100);
 }
