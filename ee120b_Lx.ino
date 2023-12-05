@@ -1,7 +1,19 @@
+#include "Timer.h"
 #include <LiquidCrystal.h>
 
 byte canvas[8][8]; // 64 bytes
 LiquidCrystal lcd(10, 11, 12, 5, 4, 3, 2); // RS~10, RW~11, E~12, D4~5, D5~4, D6~3, D7~2; 34 bytes
+
+int sound_ticks = 0;
+inline void PlayTone() {
+  sound_ticks = 8;
+}
+inline void ProcessSound(const int pin) {
+  if (sound_ticks) {
+    --sound_ticks;
+    tone(pin, 200*sound_ticks+880);
+  } else noTone(pin);
+}
 
 /**
  * 0 2 4 6
@@ -83,6 +95,7 @@ class Projectile {
     XorSet(_x+1, _y-1);
     XorSet(_x-1, _y+1);
     XorSet(_x+1, _y+1);
+    PlayTone();
   }
 };
 
@@ -125,7 +138,7 @@ class Player {
         x += dx;
       }
     }
-    if ((_state & 0x0E) == 0x0E) { // periodic 
+    if ((_state & 0x06) == 0x06) { // periodic 
       AddProjectile(Projectile(x, y-1, 0, -1, true));
     }
     // loop through projectiles to see if you got hit
@@ -179,7 +192,7 @@ class Ship {
       case 1:
         _dx = 0;
         _dy = 1;
-        _hp = 10;
+        _hp = 6;
         break;
       case 2:
         _dx = 1;
@@ -229,6 +242,7 @@ class Ship {
         if (_hp <= 0) {
           _state &= 0xFE; // unset valid bit
           player.score += 10 * _type + 5;
+          if (player.life < 5) player.life ++;
         }
         break;
       }
@@ -281,6 +295,45 @@ inline void ProcessShips() {
 }
 #define AddShip(x) ships[ship_n++] = x;
 
+#define rep(n, w) for(int i = 0; i < n; ++i) w
+#define Basic(x, y) AddShip(Ship(x, y, 0))
+#define Wall(x, y)  AddShip(Ship(x, y, 1))
+#define Boss(x, y)  AddShip(Ship(x, y, 2))
+
+int curr_level = 0;
+inline void ProcessLevels() {
+  if (ship_n == 0) {
+    switch(curr_level) {
+      case 0:
+        Basic(3, 3);
+        break;
+      case 1:
+        Wall(6, 3);
+        Wall(16, 3);
+        break;
+      case 2:
+        Basic(10, 3);
+        rep(5, Wall(i * 4, 4-i));
+        break;
+      case 3:
+        Wall(3, 4);
+        Wall(6, 4);
+        Wall(13, 4);
+        Wall(16, 4);
+        Boss(1, 3);
+        break;
+      case 4:
+        Boss(6, 3);
+        Boss(16, 5);
+        break;
+      default:
+        return;
+    }
+    ++ curr_level;
+    player.score += 100;
+  }
+}
+
 void setup() {
   lcd.begin(16, 2);
   for (int i = 0; i < 4; ++i) {
@@ -289,9 +342,10 @@ void setup() {
       lcd.write(byte(i*2 + j));
     }
   }
+  AddShip(Ship(0, 1, 0));
 //  for (int i=2;i<15;i+=4)
 //  AddShip(Ship(i, 3, 2));
-  AddShip(Ship(3, 3, 2));
+//  AddShip(Ship(3, 3, 2));
 //  AddProjectile(Projectile(2, 2, 0, 1, false));
 //  for (int i = 0; i < 10; ++i) {
 //    AddProjectile(Projectile(i, i, 0, 1, false));
@@ -299,43 +353,60 @@ void setup() {
   Serial.begin(9600);
   pinMode(A0, INPUT);
   pinMode(8, OUTPUT);
+
+  TimerSet(10); // 100Hz (10ms);
+  TimerOn();
+  TimerFlag = 0;
 }
 
+const int animate_tick_interval = 8; // game runs at 12.5Hz
+int animate_ticks = animate_tick_interval;
 void loop() {
-  Clear();
-  ProcessShips();
-  ProcessProjectiles();
+  while (!TimerFlag) {}
+  TimerFlag = 0;
+  TimerOn();
 
-  int a0 = analogRead(A0);
-  if (a0 < 200) {
-    player.dx = -1;
-  } else if(a0 > 800) {
-    player.dx = 1;
-  } else {
-    player.dx = 0;
-  }
-  if (player.IsValid()) {
-    player.Draw();
-    player.Tick();
-  }
+  // playing sounds
+  ProcessSound(8);
   
-  // push canvas to lcd
-  for (int g = 0; g < 8; ++g) {
-    lcd.createChar(g, canvas[g]);
-  }
-  for (int i = 0; i < 4; ++i) {
-    for (int j = 0; j < 2; ++j) {
-      lcd.setCursor(i, j);
-      lcd.write(byte(i*2 + j));
+  --animate_ticks;
+  if (!animate_ticks){
+    animate_ticks = animate_tick_interval;
+    Clear();
+    ProcessShips();
+    ProcessProjectiles();
+    ProcessLevels();
+  
+    int a0 = analogRead(A0);
+    if (a0 < 200) {
+      player.dx = -1;
+    } else if(a0 > 800) {
+      player.dx = 1;
+    } else {
+      player.dx = 0;
     }
+    if (player.IsValid()) {
+      player.Draw();
+      player.Tick();
+    }
+    
+    // push canvas to lcd
+    for (int g = 0; g < 8; ++g) {
+      lcd.createChar(g, canvas[g]);
+    }
+    for (int i = 0; i < 4; ++i) {
+      for (int j = 0; j < 2; ++j) {
+        lcd.setCursor(i, j);
+        lcd.write(byte(i*2 + j));
+      }
+    }
+    lcd.setCursor(6, 0);
+    lcd.print("hp  ");
+    lcd.print((int)player.life);
+    lcd.print("  ");
+    lcd.setCursor(6, 1);
+    lcd.print("pts ");
+    lcd.print(player.score);
+    lcd.print("  ");
   }
-  lcd.setCursor(6, 0);
-  lcd.print("hp  ");
-  lcd.print((int)player.life);
-  lcd.print("  ");
-  lcd.setCursor(6, 1);
-  lcd.print("pts ");
-  lcd.print(player.score);
-  lcd.print("  ");
-  delay(100);
 }
