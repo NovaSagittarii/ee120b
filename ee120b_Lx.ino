@@ -15,6 +15,9 @@ void Clear() {
     }
   }
 }
+bool ShouldExist(int x, int y) { // same as OnScreen but for enemies showing up from the top
+  return x >= 0 && x < 20 && y < 16;
+}
 bool OnScreen(int x, int y) {
   return x >= 0 && x < 20 && y >= 0 && y < 16;
 }
@@ -84,7 +87,7 @@ class Projectile {
 };
 
 int projectile_n = 0; // how many projectiles
-Projectile projectiles[50]; // 250 bytes
+Projectile projectiles[100]; // 500 bytes
 inline void ProcessProjectiles() {
   int j = 0; // location of next projectile (how many valid were counted)
   for (int i = 0; i < projectile_n; ++i) {
@@ -128,7 +131,7 @@ class Player {
     // loop through projectiles to see if you got hit
     for (int i = 0; i < projectile_n; ++i) {
       Projectile &projectile = projectiles[i];
-      if (!projectile.IsFriendly() && abs(projectile.GetX() - x) + abs(projectile.GetY() - y) <= 1) { // within 1 manhattan dist
+      if (life && !projectile.IsFriendly() && abs(projectile.GetX() - x) + abs(projectile.GetY() - y) <= 1) { // within 1 manhattan dist
         --life;
         projectile.Destroy();
       }
@@ -153,47 +156,106 @@ class Ship {
  private:
   char _x, _y, _dx, _dy;
   byte _state; // s0 ~ alive, s1..s4 ~ fire cd, s5..s7 ~ move cd
+  byte _hp;
+  byte _type;
   // 7 6 5 4 3 2 1 0
   // [   ] [     ] 
  public:
   Ship() {}
-  Ship(char x, char y): _x(x), _y(y) {
-    _dx = _dy = 1;
-    _state = 1;
-  }
+  Ship(char x, char y): _x(x), _y(y) {}
   Ship(char x, char y, char dx, char dy): _x(x), _y(y), _dx(dx), _dy(dy) {
     _state = 1;
+    _hp = 2;
+    _type = 0;
+  }
+  Ship(char x, char y, char type): _x(x), _y(y) {
+    _state = 1;
+    _type = type;
+    switch(_type) {
+      case 0:
+        _dx = _dy = 1;
+        _hp = 3;
+        break;
+      case 1:
+        _dx = 0;
+        _dy = 1;
+        _hp = 10;
+        break;
+      case 2:
+        _dx = 1;
+        _dy = 0;
+        _hp = 25;
+        break;
+    }
   }
   void Tick() {
     _state += 2;
     if ((_state & 0x0E) == 0x0E) { // periodic 
-      AddProjectile(Projectile(_x-1, _y+1, 0, 1, false));
-      AddProjectile(Projectile(_x+1, _y+1, 0, 1, false));
-      if (!OnScreen(_x+_dx, 1)) {
+      if (OnScreen(_x, _y)) { // only fire when onscreen
+        switch(_type) {
+          case 0: // || pattern
+            AddProjectile(Projectile(_x-1, _y+1, 0, 1, false));
+            AddProjectile(Projectile(_x+1, _y+1, 0, 1, false));
+            break;
+          case 1: // -|- pattern
+            if ((_state & 0x30) == 0x30) { // move down faster than usual
+              _y += _dy;
+              _state ^= 0x30;
+              AddProjectile(Projectile(_x-1, _y, -1, 0, false));
+              AddProjectile(Projectile(_x, _y, 1, 0, false));
+            }
+            break;
+          case 2: // /|\ pattern
+            AddProjectile(Projectile(_x, _y-1, 0, 1, false));
+            AddProjectile(Projectile(_x-1, _y, -1, 1, false));
+            AddProjectile(Projectile(_x-1, _y, 1, 1, false));
+        }
+      }
+      if (!ShouldExist(_x+_dx, 1)) {
         _dx *= -1; // change direction!
       }
       _x += _dx;
       if ((_state & 0xE0) == 0xE0) { // move every few times
         _y += _dy;
       }
-      if (!OnScreen(_x, _y)) _state &= 0xFE; // unset valid bit
+      if (!ShouldExist(_x, _y)) _state &= 0xFE; // unset valid bit
     }
     // loop through projectiles to see if you got hit
     for (int i = 0; i < projectile_n; ++i) {
       Projectile &projectile = projectiles[i];
       if (projectile.IsFriendly() && abs(projectile.GetX() - _x) + abs(projectile.GetY() - _y) <= 1) { // within 1 manhattan dist
-        _state &= 0xFE; // unset valid bit
         projectile.Destroy();
-        player.score += 10;
+        --_hp;
+        if (_hp <= 0) {
+          _state &= 0xFE; // unset valid bit
+          player.score += 10 * _type + 5;
+        }
         break;
       }
     }
   }
   void Draw() {
-    Set(_x, _y);
-    Set(_x, _y-1);
-    Set(_x-1, _y-1);
-    Set(_x+1, _y-1);
+    switch(_type){
+      case 0:
+        Set(_x, _y);
+//        Set(_x, _y-1);
+        Set(_x-1, _y-1);
+        Set(_x+1, _y-1);
+        break;
+      case 1:
+        Set(_x, _y);
+        Set(_x-1, _y);
+        Set(_x, _y-1);
+        Set(_x-1, _y-1);
+        break;
+      case 2:
+        Set(_x, _y);
+        Set(_x-1, _y-1);
+        Set(_x+1, _y-1);
+        Set(_x-2, _y-2);
+        Set(_x+2, _y-2);
+        break;
+    }
   }
   bool IsValid() const {
     return (_state & 1) == 1;
@@ -227,14 +289,16 @@ void setup() {
       lcd.write(byte(i*2 + j));
     }
   }
-  for (int i=0;i<15;i+=4)
-  AddShip(Ship(i, 3, 1, 1));
+//  for (int i=2;i<15;i+=4)
+//  AddShip(Ship(i, 3, 2));
+  AddShip(Ship(3, 3, 2));
 //  AddProjectile(Projectile(2, 2, 0, 1, false));
 //  for (int i = 0; i < 10; ++i) {
 //    AddProjectile(Projectile(i, i, 0, 1, false));
 //  }
   Serial.begin(9600);
   pinMode(A0, INPUT);
+  pinMode(8, OUTPUT);
 }
 
 void loop() {
